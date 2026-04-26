@@ -6,7 +6,7 @@ from scaler_logic import decide
 from lb_updater import update_lb
 from ml_model import train_model, predict_workers
 from config import *
-import pandas as p
+import pandas as pd
 import sys
 
 workers = []
@@ -31,12 +31,7 @@ def live():
         current_workers = len(workers)
 
         # 🎯 DECISION LOGIC
-        if rt >= THRESHOLD and current_workers < MAX_WORKERS:
-            decision = "scale_out"
-        elif rt < THRESHOLD and current_workers > MIN_WORKERS:
-            decision = "scale_in"
-        else:
-            decision = "stable"
+        decision = decide(rt, current_workers, MAX_WORKERS, MIN_WORKERS)
 
         print(f"RT={rt:.2f} ms → {decision}")             
           # 🚀 SCALE OUT
@@ -71,7 +66,7 @@ def perturb():
         update_lb([x[1] for x in workers])
         time.sleep(20)
 
-        rt = get_response_time()
+        rt = get_rt()
 
         data.append({
             "response_time_ms": rt,
@@ -85,7 +80,7 @@ def live_ml():
     workers = []
 
     while True:
-        rt = get_response_time()
+        rt = get_rt()
 
         target = predict_workers(rt)
 
