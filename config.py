@@ -1,4 +1,4 @@
-MI_ID = "ami-0caadfdaf8cf2e46f"          # your worker AMI
+AMI_ID = "ami-0caadfdaf8cf2e46f"          # your worker AMI
 INSTANCE_TYPE = "t3.micro"
 KEY_NAME = "autoscaler-key"
 SECURITY_GROUP = "sg-0d95d1df4cd63ffca"
