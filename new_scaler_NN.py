@@ -1,271 +1,197 @@
-# neural_network_scaler.py
+# ============================================================
+# scaler_logic.py
+#
+# ONLY THE NEW OPTIMAL SCALING LOGIC
+# (Communicates with model + metrics + AWS files)
+# ============================================================
 
-import time
-import requests
 import numpy as np
-import tensorflow as tf
 
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense
-from sklearn.preprocessing import StandardScaler
-
-# =========================================================
-# CONFIG
-# =========================================================
-
-RT_SERVER = "http://3.223.3.55:9200/rt_stats"
-
-WORKERS = [
-    "172.31.71.219"
-]
-
-TARGET_RT_HIGH = 800
-TARGET_RT_LOW = 300
-
-# =========================================================
-# METRIC COLLECTION
-# =========================================================
-
-def get_worker_metrics(worker_ip):
-
-    try:
-
-        res = requests.get(
-            f"http://{worker_ip}:9100/metrics",
-            timeout=3
-        )
-
-        data = res.json()
-
-        return [
-            float(data["cpu"]),
-            float(data["memory"]),
-            float(data["requests"])
-        ]
-
-    except:
-
-        return None
-
-
-def get_response_time():
-
-    try:
-
-        res = requests.get(
-            RT_SERVER,
-            timeout=5
-        )
-
-        return float(
-            res.json()["response_time_ms"]
-        )
-
-    except:
-
-        return None
-
-
-# =========================================================
-# DATASET GENERATION
-# =========================================================
-
-X = []
-y = []
-
-print("Collecting training data...")
-
-for _ in range(100):
-
-    total_cpu = 0
-    total_mem = 0
-    total_req = 0
-
-    count = 0
-
-    for ip in WORKERS:
-
-        metrics = get_worker_metrics(ip)
-
-        if metrics:
-
-            total_cpu += metrics[0]
-            total_mem += metrics[1]
-            total_req += metrics[2]
-
-            count += 1
-
-    if count == 0:
-
-        continue
-
-    avg_cpu = total_cpu / count
-    avg_mem = total_mem / count
-    avg_req = total_req / count
-
-    rt = get_response_time()
-
-    if rt is None:
-
-        continue
-
-    X.append([
-        avg_cpu,
-        avg_mem,
-        avg_req,
-        count
-    ])
-
-    y.append(rt)
-
-    print(
-        f"Collected -> CPU:{avg_cpu:.2f} "
-        f"MEM:{avg_mem:.2f} "
-        f"REQ:{avg_req:.2f} "
-        f"RT:{rt:.2f}"
-    )
-
-    time.sleep(5)
-
-X = np.array(X)
-y = np.array(y)
-
-# =========================================================
-# FEATURE SCALING
-# =========================================================
-
-scaler = StandardScaler()
-
-X = scaler.fit_transform(X)
-
-# =========================================================
-# TENSORFLOW NEURAL NETWORK
-# =========================================================
-
-model = Sequential([
-
-    Dense(
-        64,
-        activation='relu',
-        input_shape=(4,)
-    ),
-
-    Dense(
-        32,
-        activation='relu'
-    ),
-
-    Dense(
-        16,
-        activation='relu'
-    ),
-
-    Dense(
-        1
-    )
-])
-
-model.compile(
-
-    optimizer='adam',
-
-    loss='mse',
-
-    metrics=['mae']
+from config import (
+    QOS_MAX,
+    K_MIN,
+    K_MAX
 )
 
-# =========================================================
-# TRAIN MODEL
-# =========================================================
-
-print("\nTraining Neural Network...\n")
-
-model.fit(
-
-    X,
-    y,
-
-    epochs=200,
-
-    batch_size=8,
-
-    verbose=1
+from aws_manager import (
+    launch_instance,
+    terminate_instance
 )
 
-# =========================================================
-# LIVE PREDICTION + SCALING DECISION
-# =========================================================
+from lb_manager import (
+    update_load_balancer
+)
 
-print("\nStarting intelligent autoscaler...\n")
+from worker_tracker import workers
 
-while True:
 
-    total_cpu = 0
-    total_mem = 0
-    total_req = 0
+# ============================================================
+# ALGORITHM 1:
+# Selecting Optimal Number of VMs
+# ============================================================
 
-    count = 0
+def select_optimal_vm_count(
 
-    for ip in WORKERS:
+    model,
+    scaler,
 
-        metrics = get_worker_metrics(ip)
+    current_metrics,
 
-        if metrics:
+    current_workers
+):
 
-            total_cpu += metrics[0]
-            total_mem += metrics[1]
-            total_req += metrics[2]
+    """
+    current_metrics:
+    [cpu, memory, requests]
 
-            count += 1
+    current_workers:
+    current active VM count
+    """
 
-    if count == 0:
+    k_op = None
 
-        print("No workers available")
+    cpu = current_metrics[0]
+    mem = current_metrics[1]
+    req = current_metrics[2]
 
-        time.sleep(10)
+    # ========================================================
+    # Try every scaling possibility
+    # ========================================================
 
-        continue
+    for k in range(K_MIN, K_MAX + 1):
 
-    avg_cpu = total_cpu / count
-    avg_mem = total_mem / count
-    avg_req = total_req / count
+        new_workers = current_workers + k
 
-    features = np.array([[
-        avg_cpu,
-        avg_mem,
-        avg_req,
-        count
-    ]])
+        # Invalid worker count
+        if new_workers <= 0:
+            continue
 
-    features = scaler.transform(features)
+        # ====================================================
+        # Estimate future metrics
+        # ====================================================
 
-    pred_rt = model.predict(
-        features,
-        verbose=0
-    )[0][0]
+        est_cpu = (
+            cpu * current_workers
+        ) / new_workers
 
-    print(
-        f"\nPredicted RT = {pred_rt:.2f} ms"
+        est_mem = (
+            mem * current_workers
+        ) / new_workers
+
+        est_req = (
+            req * current_workers
+        ) / new_workers
+
+        # ====================================================
+        # Build feature vector
+        # ====================================================
+
+        X = np.array([[
+            est_cpu,
+            est_mem,
+            est_req,
+            new_workers
+        ]])
+
+        # ====================================================
+        # Normalize features
+        # ====================================================
+
+        X = scaler.transform(X)
+
+        # ====================================================
+        # Predict response time
+        # ====================================================
+
+        pred_rt = model.predict(
+            X,
+            verbose=0
+        )[0][0]
+
+        print(
+            f"k={k} | "
+            f"workers={new_workers} | "
+            f"PredRT={pred_rt:.2f} ms"
+        )
+
+        # ====================================================
+        # QoS satisfied
+        # ====================================================
+
+        if pred_rt < QOS_MAX:
+
+            k_op = k
+
+            break
+
+    # ========================================================
+    # No QoS solution found
+    # ========================================================
+
+    if k_op is None:
+
+        k_op = K_MAX
+
+    return k_op
+
+
+# ============================================================
+# APPLY SCALING DECISION
+# ============================================================
+
+def apply_scaling(k_op):
+
+    # ========================================================
+    # SCALE OUT
+    # ========================================================
+
+    if k_op > 0:
+
+        print(
+            f"\nScaling OUT by {k_op} VMs"
+        )
+
+        for _ in range(k_op):
+
+            node = launch_instance()
+
+            workers.append(node)
+
+    # ========================================================
+    # SCALE IN
+    # ========================================================
+
+    elif k_op < 0:
+
+        print(
+            f"\nScaling IN by {abs(k_op)} VMs"
+        )
+
+        for _ in range(abs(k_op)):
+
+            if len(workers) <= 1:
+                break
+
+            victim = workers.pop()
+
+            terminate_instance(
+                victim["id"]
+            )
+
+    # ========================================================
+    # UPDATE LOAD BALANCER
+    # ========================================================
+
+    worker_ips = [
+        w["ip"]
+        for w in workers
+    ]
+
+    update_load_balancer(
+        worker_ips
     )
 
-    # =====================================================
-    # SCALING DECISION
-    # =====================================================
-
-    if pred_rt > TARGET_RT_HIGH:
-
-        print("Decision: SCALE OUT")
-
-        # launch_instance()
-
-    elif pred_rt < TARGET_RT_LOW:
-
-        print("Decision: SCALE IN")
-
-        # terminate_instance()
-
-    else:
-
-        print("Decision: STABLE")
-
-    time.sleep(20)
+    print(
+        "\nUpdated Cluster Size:",
+        len(workers)
+    )
