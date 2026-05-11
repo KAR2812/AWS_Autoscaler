@@ -118,3 +118,96 @@ def apply_scaling(k_op):
         "\nUpdated Cluster Size:",
         len(workers)
     )
+
+
+
+
+
+
+# =========================================================
+# LIVE AUTOSCALER LOOP
+# =========================================================
+
+print("\nStarting intelligent autoscaler...\n")
+
+while True:
+
+    total_cpu = 0
+    total_mem = 0
+    total_req = 0
+
+    count = 0
+
+    for ip in WORKERS:
+
+        metrics = get_worker_metrics(ip)
+
+        if metrics:
+
+            total_cpu += metrics[0]
+            total_mem += metrics[1]
+            total_req += metrics[2]
+
+            count += 1
+
+    if count == 0:
+
+        print("No workers available")
+
+        time.sleep(10)
+        continue
+
+    avg_cpu = total_cpu / count
+    avg_mem = total_mem / count
+    avg_req = total_req / count
+
+    print(
+        f"\nCurrent State → CPU:{avg_cpu:.2f} "
+        f"MEM:{avg_mem:.2f} "
+        f"REQ:{avg_req:.2f} "
+        f"Workers:{count}"
+    )
+
+    # =====================================================
+    # SELECT OPTIMAL SCALING ACTION
+    # =====================================================
+
+    k_op = select_optimal_k(
+        avg_cpu,
+        avg_mem,
+        avg_req,
+        count
+    )
+
+    print(f"\nOptimal scaling decision k_op = {k_op}")
+
+    # =====================================================
+    # APPLY SCALING
+    # =====================================================
+
+    if k_op > 0:
+
+        print(f"Scaling OUT by {k_op}")
+
+        for _ in range(k_op):
+            print("Launching instance...")
+            # launch_instance()
+
+    elif k_op < 0:
+
+        print(f"Scaling IN by {abs(k_op)}")
+
+        for _ in range(abs(k_op)):
+            print("Terminating instance...")
+            # terminate_instance()
+
+    else:
+
+        print("System is STABLE")
+
+    time.sleep(20)
+
+
+
+
+
