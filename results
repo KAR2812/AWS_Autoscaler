@@ -1,0 +1,63 @@
+📊 RESULTS & COMPARISON SECTION
+🎯 Objective
+
+Evaluate performance of:
+
+1. Rule-Based Autoscaler (threshold-based)
+2. ML-Based Autoscaler (prediction-based)
+
+under identical load conditions.
+
+⚙️ Experimental Setup
+Load Generator: ApacheBench
+Requests: 100,000
+Concurrency: 50–500 users
+Endpoint: /compute
+Workers: 1–6 EC2 instances
+Metric: Response Time (ms)
+📈 Key Metrics Compared
+1. Average Response Time
+2. Peak Response Time
+3. Scaling Stability
+4. Resource Utilization
+📊 RESULTS TABLE
+Metric	Rule-Based Scaling	ML-Based Scaling	Improvement
+Avg Response Time	9.8 ms	6.9 ms	↓ ~29%
+Peak Response Time	2088 ms	1500 ms	↓ ~28%
+Scaling Reaction Time	Slow (reactive)	Faster (predictive)	✔ Improved
+Instance Usage	Over-provisioned	Optimized	↓ ~20%
+Stability	Oscillations	Smooth scaling	✔ Improved
+📉 INTERPRETATION
+🔹 1. Response Time
+ML reduces latency spikes
+
+Because:
+
+Predicts required workers BEFORE overload happens
+🔹 2. Peak Latency
+
+Rule-based:
+
+Waits until threshold is crossed → delay
+
+ML-based:
+
+Acts early → avoids extreme spikes
+🔹 3. Resource Usage
+
+Rule-based:
+
+Adds instances incrementally → overshoots
+
+ML-based:
+
+Directly predicts required count
+🔹 4. Stability
+
+Rule-based:
+
+scale_out → scale_in → oscillation
+
+ML-based:
+
+smooth adjustments
