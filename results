@@ -1,63 +1,114 @@
-📊 RESULTS & COMPARISON SECTION
-🎯 Objective
+# 📊 Results & Performance Comparison
 
-Evaluate performance of:
+## 🎯 Objective
 
-1. Rule-Based Autoscaler (threshold-based)
-2. ML-Based Autoscaler (prediction-based)
+The goal of this experiment is to compare the performance of:
 
-under identical load conditions.
+* **Rule-Based Autoscaling** (threshold-driven)
+* **ML-Based Autoscaling** (prediction-driven)
 
-⚙️ Experimental Setup
-Load Generator: ApacheBench
-Requests: 100,000
-Concurrency: 50–500 users
-Endpoint: /compute
-Workers: 1–6 EC2 instances
-Metric: Response Time (ms)
-📈 Key Metrics Compared
-1. Average Response Time
-2. Peak Response Time
-3. Scaling Stability
-4. Resource Utilization
-📊 RESULTS TABLE
-Metric	Rule-Based Scaling	ML-Based Scaling	Improvement
-Avg Response Time	9.8 ms	6.9 ms	↓ ~29%
-Peak Response Time	2088 ms	1500 ms	↓ ~28%
-Scaling Reaction Time	Slow (reactive)	Faster (predictive)	✔ Improved
-Instance Usage	Over-provisioned	Optimized	↓ ~20%
-Stability	Oscillations	Smooth scaling	✔ Improved
-📉 INTERPRETATION
-🔹 1. Response Time
-ML reduces latency spikes
+under identical workload conditions.
 
-Because:
+---
 
-Predicts required workers BEFORE overload happens
-🔹 2. Peak Latency
+## ⚙️ Experimental Setup
 
-Rule-based:
+| Parameter      | Value               |
+| -------------- | ------------------- |
+| Load Generator | ApacheBench (ab)    |
+| Endpoint       | `/compute`          |
+| Requests       | 100,000             |
+| Concurrency    | 50 – 500 users      |
+| Workers        | 1 – 6 EC2 instances |
+| Metric         | Response Time (ms)  |
 
-Waits until threshold is crossed → delay
+---
 
-ML-based:
+## 📈 Metrics Evaluated
 
-Acts early → avoids extreme spikes
-🔹 3. Resource Usage
+* Average Response Time
+* Peak Response Time
+* Scaling Stability
+* Resource Utilization
 
-Rule-based:
+---
 
-Adds instances incrementally → overshoots
+## 📊 Results Summary
 
-ML-based:
+| Metric             | Rule-Based       | ML-Based   | Improvement |
+| ------------------ | ---------------- | ---------- | ----------- |
+| Avg Response Time  | 9.8 ms           | 6.9 ms     | ↓ 29%       |
+| Peak Response Time | 2088 ms          | 1500 ms    | ↓ 28%       |
+| Scaling Reaction   | Reactive         | Predictive | ✔ Faster    |
+| Instance Usage     | Over-provisioned | Optimized  | ↓ ~20%      |
+| Stability          | Oscillatory      | Smooth     | ✔ Improved  |
 
-Directly predicts required count
-🔹 4. Stability
+---
 
-Rule-based:
+## 📉 Observations
 
-scale_out → scale_in → oscillation
+### 🔹 1. Response Time
 
-ML-based:
+The ML-based autoscaler significantly reduces latency spikes by predicting required resources before the system becomes overloaded.
 
-smooth adjustments
+---
+
+### 🔹 2. Peak Latency
+
+* Rule-based scaling reacts **after** thresholds are crossed → delayed response
+* ML-based scaling acts **proactively**, reducing extreme latency peaks
+
+---
+
+### 🔹 3. Resource Utilization
+
+* Rule-based approach often **over-scales** due to incremental decisions
+* ML-based approach **predicts optimal instance count**, improving efficiency
+
+---
+
+### 🔹 4. Stability
+
+* Rule-based scaling causes **frequent oscillations**
+* ML-based scaling provides **smooth and stable adjustments**
+
+---
+
+## 📊 Conceptual Graph
+
+```
+Response Time
+   ↑
+   |         Rule-Based
+   |        /\     /\      (high spikes)
+   |       /  \   /  \
+   |      /    \_/    \____
+   |
+   |     ML-Based
+   |     /\/\______/\/\____ (smoother curve)
+   |
+   +----------------------------→ Time
+```
+
+---
+
+## 🚀 Final Outcome
+
+* **~25–30% reduction in response time**
+* **~15–25% improvement in resource utilization**
+* **Faster and more accurate scaling decisions**
+* **Reduced latency spikes and improved system stability**
+
+---
+
+## 📌 Conclusion
+
+The ML-based autoscaler provides a **predictive, adaptive, and efficient scaling mechanism** compared to traditional rule-based approaches.
+
+Instead of reacting to system overload, it anticipates required capacity using learned patterns, resulting in improved performance and optimized infrastructure usage.
+
+---
+
+## ⚠️ Note
+
+The reported improvements are based on experimental observations under controlled load conditions. Actual results may vary depending on workload characteristics and system configuration.
