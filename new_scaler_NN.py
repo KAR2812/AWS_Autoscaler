@@ -5,134 +5,57 @@
 # (Communicates with model + metrics + AWS files)
 # ============================================================
 
-import numpy as np
+# Algorithm 1: Selecting the Optimal Number of VMs to Scale (k_op)
 
-from config import (
-    QOS_MAX,
-    K_MIN,
-    K_MAX
-)
-
-from aws_manager import (
-    launch_instance,
-    terminate_instance
-)
-
-from lb_manager import (
-    update_load_balancer
-)
-
-from worker_tracker import workers
-
-
-# ============================================================
-# ALGORITHM 1:
-# Selecting Optimal Number of VMs
-# ============================================================
-
-def select_optimal_vm_count(
-
-    model,
-    scaler,
-
-    current_metrics,
-
-    current_workers
-):
-
+def select_optimal_vms(QoS_max, K_min, K_max, M, w, coefficients, f_NN):
     """
-    current_metrics:
-    [cpu, memory, requests]
-
-    current_workers:
-    current active VM count
+    QoS_max   : Upper limit of QoS (RT)
+    K_min     : Lowest delta VM (e.g., -7)
+    K_max     : Highest delta VM (e.g., +7)
+    M         : Vector of metrics (e.g., CPU usage)
+    w         : Actual number of VMs
+    coefficients : List of tuples (c_i0, c_i1, c_i2)
+    f_NN      : Neural network prediction function
     """
 
+    # Initialize k_op as None
     k_op = None
 
-    cpu = current_metrics[0]
-    mem = current_metrics[1]
-    req = current_metrics[2]
+    # Iterate through possible VM scaling values
+    for k in range(K_min, K_max + 1):
 
-    # ========================================================
-    # Try every scaling possibility
-    # ========================================================
+        # Empty list for transformed metrics
+        M_prime = []
 
-    for k in range(K_MIN, K_MAX + 1):
+        # Update each metric
+        for i in range(len(M)):
 
-        new_workers = current_workers + k
+            m_i = M[i]
+            c_i0, c_i1, c_i2 = coefficients[i]
 
-        # Invalid worker count
-        if new_workers <= 0:
-            continue
+            m_i_prime = (
+                c_i0
+                + c_i1 * m_i * (w / (w + k))
+                + c_i2 * m_i * (k / (w + k))
+            )
 
-        # ====================================================
-        # Estimate future metrics
-        # ====================================================
+            # Append updated metric
+            M_prime.append(m_i_prime)
 
-        est_cpu = (
-            cpu * current_workers
-        ) / new_workers
+        # Predict response time using neural network
+        RT_est = f_NN(M_prime)
 
-        est_mem = (
-            mem * current_workers
-        ) / new_workers
-
-        est_req = (
-            req * current_workers
-        ) / new_workers
-
-        # ====================================================
-        # Build feature vector
-        # ====================================================
-
-        X = np.array([[
-            est_cpu,
-            est_mem,
-            est_req,
-            new_workers
-        ]])
-
-        # ====================================================
-        # Normalize features
-        # ====================================================
-
-        X = scaler.transform(X)
-
-        # ====================================================
-        # Predict response time
-        # ====================================================
-
-        pred_rt = model.predict(
-            X,
-            verbose=0
-        )[0][0]
-
-        print(
-            f"k={k} | "
-            f"workers={new_workers} | "
-            f"PredRT={pred_rt:.2f} ms"
-        )
-
-        # ====================================================
-        # QoS satisfied
-        # ====================================================
-
-        if pred_rt < QOS_MAX:
-
+        # Check QoS constraint
+        if RT_est < QoS_max:
             k_op = k
-
             break
 
-    # ========================================================
-    # No QoS solution found
-    # ========================================================
-
+    # If no valid scaling found
     if k_op is None:
-
-        k_op = K_MAX
+        k_op = K_max
 
     return k_op
+
 
 
 # ============================================================
