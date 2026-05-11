@@ -1,197 +1,143 @@
-# ============================================================
-# scaler_logic.py
-#
-# ONLY THE NEW OPTIMAL SCALING LOGIC
-# (Communicates with model + metrics + AWS files)
-# ============================================================
+# =========================================================
+# MAIN SCALER (LINEAR REGRESSION BASED)
+# =========================================================
 
+import time
+import requests
 import numpy as np
+import pickle
 
-from config import (
-    QOS_MAX,
-    K_MIN,
-    K_MAX
-)
+from aws_manager import launch_instance, terminate_instance
+from lb_updater import update_lb
+from config import RT_SERVER
 
-from aws_manager import (
-    launch_instance,
-    terminate_instance
-)
+# =========================================================
+# LOAD TRAINED MODEL
+# =========================================================
 
-from lb_manager import (
-    update_load_balancer
-)
+with open("model.pkl", "rb") as f:
+    model = pickle.load(f)
 
-from worker_tracker import workers
+print("Loaded Linear Regression model")
 
+# =========================================================
+# GLOBAL STATE
+# =========================================================
 
-# ============================================================
-# ALGORITHM 1:
-# Selecting Optimal Number of VMs
-# ============================================================
+workers = []  # list of (instance_id, ip)
 
-def select_optimal_vm_count(
+TARGET_RT = 6   # ms target (you mentioned ~6ms)
 
-    model,
-    scaler,
+# =========================================================
+# GET RESPONSE TIME
+# =========================================================
 
-    current_metrics,
+def get_response_time():
 
-    current_workers
-):
+    try:
+        res = requests.get(RT_SERVER, timeout=5)
+        return float(res.json()["response_time_ms"])
 
-    """
-    current_metrics:
-    [cpu, memory, requests]
+    except:
+        return None
 
-    current_workers:
-    current active VM count
-    """
+# =========================================================
+# PREDICT REQUIRED WORKERS
+# =========================================================
 
-    k_op = None
+def predict_workers(rt):
 
-    cpu = current_metrics[0]
-    mem = current_metrics[1]
-    req = current_metrics[2]
+    X = np.array([[rt]])
 
-    # ========================================================
-    # Try every scaling possibility
-    # ========================================================
+    pred = model.predict(X)[0]
 
-    for k in range(K_MIN, K_MAX + 1):
+    # round and clamp
+    pred = int(round(pred))
 
-        new_workers = current_workers + k
+    pred = max(1, min(pred, 6))  # keep between 1–6
 
-        # Invalid worker count
-        if new_workers <= 0:
+    return pred
+
+# =========================================================
+# SCALING LOGIC
+# =========================================================
+
+def live():
+
+    global workers
+
+    print("\nStarting Linear Regression Autoscaler...\n")
+
+    while True:
+
+        rt = get_response_time()
+
+        if rt is None:
+
+            print("Failed to fetch RT")
+            time.sleep(5)
             continue
 
-        # ====================================================
-        # Estimate future metrics
-        # ====================================================
+        current_workers = len(workers)
 
-        est_cpu = (
-            cpu * current_workers
-        ) / new_workers
-
-        est_mem = (
-            mem * current_workers
-        ) / new_workers
-
-        est_req = (
-            req * current_workers
-        ) / new_workers
-
-        # ====================================================
-        # Build feature vector
-        # ====================================================
-
-        X = np.array([[
-            est_cpu,
-            est_mem,
-            est_req,
-            new_workers
-        ]])
-
-        # ====================================================
-        # Normalize features
-        # ====================================================
-
-        X = scaler.transform(X)
-
-        # ====================================================
-        # Predict response time
-        # ====================================================
-
-        pred_rt = model.predict(
-            X,
-            verbose=0
-        )[0][0]
+        predicted_workers = predict_workers(rt)
 
         print(
-            f"k={k} | "
-            f"workers={new_workers} | "
-            f"PredRT={pred_rt:.2f} ms"
+            f"RT={rt:.2f} ms | "
+            f"Current={current_workers} | "
+            f"Predicted={predicted_workers}"
         )
 
-        # ====================================================
-        # QoS satisfied
-        # ====================================================
+        # =====================================================
+        # DECISION
+        # =====================================================
 
-        if pred_rt < QOS_MAX:
+        if predicted_workers > current_workers:
 
-            k_op = k
+            scale = predicted_workers - current_workers
 
-            break
+            print(f"Scaling OUT by {scale}")
 
-    # ========================================================
-    # No QoS solution found
-    # ========================================================
+            for _ in range(scale):
 
-    if k_op is None:
+                instance_id, ip = launch_instance()
 
-        k_op = K_MAX
+                workers.append((instance_id, ip))
 
-    return k_op
+                print(f"Launched: {instance_id} | {ip}")
+
+        elif predicted_workers < current_workers:
+
+            scale = current_workers - predicted_workers
+
+            print(f"Scaling IN by {scale}")
+
+            for _ in range(scale):
+
+                instance_id, ip = workers.pop()
+
+                terminate_instance(instance_id)
+
+                print(f"Terminated: {instance_id}")
+
+        else:
+
+            print("System is STABLE")
+
+        # =====================================================
+        # UPDATE LOAD BALANCER
+        # =====================================================
+
+        worker_ips = [w[1] for w in workers]
+
+        update_lb(worker_ips)
+
+        time.sleep(10)
 
 
-# ============================================================
-# APPLY SCALING DECISION
-# ============================================================
+# =========================================================
+# ENTRY POINT
+# =========================================================
 
-def apply_scaling(k_op):
-
-    # ========================================================
-    # SCALE OUT
-    # ========================================================
-
-    if k_op > 0:
-
-        print(
-            f"\nScaling OUT by {k_op} VMs"
-        )
-
-        for _ in range(k_op):
-
-            node = launch_instance()
-
-            workers.append(node)
-
-    # ========================================================
-    # SCALE IN
-    # ========================================================
-
-    elif k_op < 0:
-
-        print(
-            f"\nScaling IN by {abs(k_op)} VMs"
-        )
-
-        for _ in range(abs(k_op)):
-
-            if len(workers) <= 1:
-                break
-
-            victim = workers.pop()
-
-            terminate_instance(
-                victim["id"]
-            )
-
-    # ========================================================
-    # UPDATE LOAD BALANCER
-    # ========================================================
-
-    worker_ips = [
-        w["ip"]
-        for w in workers
-    ]
-
-    update_load_balancer(
-        worker_ips
-    )
-
-    print(
-        "\nUpdated Cluster Size:",
-        len(workers)
-    )
+if __name__ == "__main__":
+    live()
