@@ -1,113 +1,197 @@
- 
-import time
-import requests
-from aws_manager import launch_instance, terminate_instance
-from scaler_logic import decide
-from lb_updater import update_lb
-from ml_model import train_model, predict_workers
-from config import *
-import pandas as pd
-import sys
+# ============================================================
+# scaler_logic.py
+#
+# ONLY THE NEW OPTIMAL SCALING LOGIC
+# (Communicates with model + metrics + AWS files)
+# ============================================================
 
-workers = []
+import numpy as np
 
-def get_rt():
-    try:
-        res = requests.get(RT_SERVER, timeout=3)
-        return res.json()["response_time_ms"]
-    except:
-        return 1000
+from config import (
+    QOS_MAX,
+    K_MIN,
+    K_MAX
+)
+
+from aws_manager import (
+    launch_instance,
+    terminate_instance
+)
+
+from lb_manager import (
+    update_load_balancer
+)
+
+from worker_tracker import workers
 
 
-THRESHOLD = 6  # ms
-MIN_WORKERS = 1
-MAX_WORKERS = 6        
-def live():
-    workers = []
+# ============================================================
+# ALGORITHM 1:
+# Selecting Optimal Number of VMs
+# ============================================================
 
-    while True:
-        rt = get_rt()
+def select_optimal_vm_count(
 
-        current_workers = len(workers)
+    model,
+    scaler,
 
-        # 🎯 DECISION LOGIC
-        decision = decide(rt, current_workers, MAX_WORKERS, MIN_WORKERS)
+    current_metrics,
 
-        print(f"RT={rt:.2f} ms → {decision}")             
-          # 🚀 SCALE OUT
-        if decision == "scale_out":
-            instance_id, ip = launch_instance()
-            workers.append((instance_id, ip))
+    current_workers
+):
 
-        # 🔽 SCALE IN
-        elif decision == "scale_in":
-            instance_id, ip = workers.pop()
-            terminate_instance(instance_id)
+    """
+    current_metrics:
+    [cpu, memory, requests]
 
-        # 🔥 UPDATE LOAD BALANCER
-        worker_ips = [w[1] for w in workers]
-        update_lb(worker_ips)
+    current_workers:
+    current active VM count
+    """
 
-        time.sleep(10)
-def perturb():
-    workers = []
-    data = []
+    k_op = None
 
-    for w in range(1, 6):
+    cpu = current_metrics[0]
+    mem = current_metrics[1]
+    req = current_metrics[2]
 
-        while len(workers) < w:
-            instance_id, ip = launch_instance()
-            workers.append((instance_id, ip))
+    # ========================================================
+    # Try every scaling possibility
+    # ========================================================
 
-        while len(workers) > w:
-            instance_id, ip = workers.pop()
-            terminate_instance(instance_id)
+    for k in range(K_MIN, K_MAX + 1):
 
-        update_lb([x[1] for x in workers])
-        time.sleep(20)
+        new_workers = current_workers + k
 
-        rt = get_rt()
+        # Invalid worker count
+        if new_workers <= 0:
+            continue
 
-        data.append({
-            "response_time_ms": rt,
-            "workers": w
-        })
+        # ====================================================
+        # Estimate future metrics
+        # ====================================================
 
-        print(f"Collected → workers={w}, RT={rt}")
+        est_cpu = (
+            cpu * current_workers
+        ) / new_workers
 
-    pd.DataFrame(data).to_csv("training_data.csv", index=False)
-def live_ml():
-    workers = []
+        est_mem = (
+            mem * current_workers
+        ) / new_workers
 
-    while True:
-        rt = get_rt()
+        est_req = (
+            req * current_workers
+        ) / new_workers
 
-        target = predict_workers(rt)
+        # ====================================================
+        # Build feature vector
+        # ====================================================
 
-        print(f"RT={rt:.2f} → ML predicts {target} workers")
+        X = np.array([[
+            est_cpu,
+            est_mem,
+            est_req,
+            new_workers
+        ]])
 
-        while len(workers) < target:
-            instance_id, ip = launch_instance()
-            workers.append((instance_id, ip))
+        # ====================================================
+        # Normalize features
+        # ====================================================
 
-        while len(workers) > target:
-            instance_id, ip = workers.pop()
-            terminate_instance(instance_id)
+        X = scaler.transform(X)
 
-        update_lb([x[1] for x in workers])
+        # ====================================================
+        # Predict response time
+        # ====================================================
 
-        time.sleep(10)
-if __name__ == "__main__":
-    mode = sys.argv[1]
+        pred_rt = model.predict(
+            X,
+            verbose=0
+        )[0][0]
 
-    if mode == "perturb":
-        perturb()
+        print(
+            f"k={k} | "
+            f"workers={new_workers} | "
+            f"PredRT={pred_rt:.2f} ms"
+        )
 
-    elif mode == "train":
-        train_model()
+        # ====================================================
+        # QoS satisfied
+        # ====================================================
 
-    elif mode == "live_ml":
-        live_ml()
+        if pred_rt < QOS_MAX:
 
-    else:
-        print("Invalid mode")
+            k_op = k
+
+            break
+
+    # ========================================================
+    # No QoS solution found
+    # ========================================================
+
+    if k_op is None:
+
+        k_op = K_MAX
+
+    return k_op
+
+
+# ============================================================
+# APPLY SCALING DECISION
+# ============================================================
+
+def apply_scaling(k_op):
+
+    # ========================================================
+    # SCALE OUT
+    # ========================================================
+
+    if k_op > 0:
+
+        print(
+            f"\nScaling OUT by {k_op} VMs"
+        )
+
+        for _ in range(k_op):
+
+            node = launch_instance()
+
+            workers.append(node)
+
+    # ========================================================
+    # SCALE IN
+    # ========================================================
+
+    elif k_op < 0:
+
+        print(
+            f"\nScaling IN by {abs(k_op)} VMs"
+        )
+
+        for _ in range(abs(k_op)):
+
+            if len(workers) <= 1:
+                break
+
+            victim = workers.pop()
+
+            terminate_instance(
+                victim["id"]
+            )
+
+    # ========================================================
+    # UPDATE LOAD BALANCER
+    # ========================================================
+
+    worker_ips = [
+        w["ip"]
+        for w in workers
+    ]
+
+    update_load_balancer(
+        worker_ips
+    )
+
+    print(
+        "\nUpdated Cluster Size:",
+        len(workers)
+    )
